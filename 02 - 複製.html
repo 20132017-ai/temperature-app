@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>12個月溫度記錄系統 - 含歷史記錄</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .input-section {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .history-section {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .input-area {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .month-input {
+            display: flex;
+            flex-direction: column;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .save-btn {
+            background-color: #2196F3;
+        }
+        .save-btn:hover {
+            background-color: #0b7dda;
+        }
+        canvas {
+            max-width: 100%;
+            margin-top: 20px;
+        }
+        .history-item {
+            border-bottom: 1px solid #eee;
+            padding: 8px;
+            font-size: 14px;
+        }
+        .history-item:hover {
+            background-color: #f5f5f5;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            padding: 20px;
+        }
+        .error {
+            color: red;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid red;
+            border-radius: 4px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h2>📊 12個月溫度記錄系統（跨電腦同步）</h2>
+    
+    <div class="container">
+        <!-- 左側：輸入區域 -->
+        <div class="input-section">
+            <h3>✏️ 填寫溫度</h3>
+            <div id="inputs" class="input-area"></div>
+            <button onclick="updateChart()">📈 更新圖表</button>
+            <button class="save-btn" onclick="saveToCloud()">💾 儲存到雲端</button>
+            <button onclick="loadHistoryFromCloud()">📜 載入歷史記錄</button>
+            <canvas id="temperatureChart"></canvas>
+        </div>
+        
+        <!-- 右側：歷史記錄 -->
+        <div class="history-section">
+            <h3>📜 歷史溫度記錄</h3>
+            <div id="historyList">
+                <div class="loading">點擊「載入歷史記錄」查看</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="errorMsg" class="error"></div>
+
+    <script>
+        // 設定你的 Google Apps Script 網址
+        const API_URL = 'https://script.google.com/macros/s/AKfycbwLdacA3NJfIBHtY6t-RaH19ztf_aYxqxNNXqCP19eOOs7NtdyAaiH6bj0MmAREDilB/exec';  // 請替換成你的網址！
+        
+        // 月份名稱
+        const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+        
+        // 產生唯一的使用者ID（存在 localStorage）
+        let userId = localStorage.getItem('userId');
+        if (!userId) {
+            userId = 'user_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('userId', userId);
+        }
+        
+        // 動態建立12個輸入框
+        const container = document.getElementById('inputs');
+        months.forEach(month => {
+            const div = document.createElement('div');
+            div.className = 'month-input';
+            div.innerHTML = `
+                <label>${month} 溫度(°C)</label>
+                <input type="number" id="${month}" value="${Math.floor(Math.random() * 25 + 5)}" step="0.1">
+            `;
+            container.appendChild(div);
+        });
+
+        // 取得圖表上下文並初始化折線圖
+        const ctx = document.getElementById('temperatureChart').getContext('2d');
+        let chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: months,
+                datasets: [{
+                    label: '目前溫度 (°C)',
+                    data: getTemperatureData(),
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    tension: 0.1,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        title: { display: true, text: '溫度 (°C)' },
+                        min: -10,
+                        max: 45
+                    }
+                }
+            }
+        });
+
+        // 從輸入框讀取12個溫度值
+        function getTemperatureData() {
+            return months.map(month => {
+                let val = parseFloat(document.getElementById(month).value);
+                return isNaN(val) ? 0 : val;
+            });
+        }
+
+        // 更新圖表
+        function updateChart() {
+            chart.data.datasets[0].data = getTemperatureData();
+            chart.update();
+        }
+        
+        // 儲存到雲端
+        async function saveToCloud() {
+            showError('', false);
+            const temperatures = getTemperatureData();
+            
+            // 檢查是否有填寫完整
+            if (temperatures.some(t => t === 0)) {
+                showError('請填寫所有月份的溫度！', true);
+                return;
+            }
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        temperatures: temperatures,
+                        userId: userId,
+                        timestamp: new Date().toISOString()
+                    })
+                });
+                
+                alert('✅ 儲存成功！其他人現在也能看到這筆記錄');
+                await loadHistoryFromCloud();
+                
+            } catch(error) {
+                showError('儲存失敗：' + error.message, true);
+            }
+        }
+        
+        // 載入歷史記錄
+        async function loadHistoryFromCloud() {
+            const historyDiv = document.getElementById('historyList');
+            historyDiv.innerHTML = '<div class="loading">載入中...</div>';
+            showError('', false);
+            
+            try {
+                const response = await fetch(API_URL + '?action=get');
+                const data = await response.json();
+                
+                if (data.success && data.history.length > 0) {
+                    // 依時間倒序排列（最新的在上面）
+                    const sortedHistory = data.history.reverse();
+                    
+                    // 顯示最近150筆記錄
+                    historyDiv.innerHTML = sortedHistory.slice(0, 150).map(record => {
+                        const date = new Date(record.timestamp);
+                        const dateStr = date.toLocaleString('zh-TW');
+                        return `
+                            <div class="history-item">
+                                <strong>📅 ${dateStr}</strong><br>
+                                📍 填寫者: ${record.userId || '匿名'}<br>
+                                🌡️ ${record.month}月：${record.temperature}°C
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    if (sortedHistory.length > 50) {
+                        historyDiv.innerHTML += '<div class="history-item">... 還有 ' + (sortedHistory.length - 50) + ' 筆記錄</div>';
+                    }
+                } else {
+                    historyDiv.innerHTML = '<div class="loading">尚無歷史記錄，請先儲存資料</div>';
+                }
+            } catch(error) {
+                historyDiv.innerHTML = '<div class="loading">載入失敗，請確認網路連線</div>';
+                showError('載入失敗：' + error.message, true);
+            }
+        }
+        
+        function showError(msg, show) {
+            const errorDiv = document.getElementById('errorMsg');
+            errorDiv.style.display = show ? 'block' : 'none';
+            errorDiv.textContent = msg;
+        }
+        
+        // 自動載入歷史記錄
+        loadHistoryFromCloud();
+    </script>
+</body>
+</html>
